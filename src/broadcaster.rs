@@ -3,14 +3,17 @@
 extern crate futures;
 extern crate tokio;
 extern crate crossbeam;
+extern crate rand;
 
-use crate::node::Node;
-use crate::message::Message;
-use std::{io::{Result, Error, ErrorKind}, mem, thread};
+use std::{io::{Result, Error, ErrorKind}, mem, thread, net::SocketAddrV4};
 use tokio::{sync::oneshot, net::{TcpListener, TcpStream}};
 use crossbeam::channel;
 // tokio channels for data into/within tokio
 // crossbeam channels for data out of tokio
+use rand::Rng;
+
+use crate::node::Node;
+use crate::message::Message;
 
 fn handle_socket(sock: TcpStream) {
     ()
@@ -80,6 +83,7 @@ impl Broadcaster {
         }
     }
 
+    // opens the listener (not required to send)
     pub fn open(&mut self, port: u16) -> Result<()> {
         match self.listener {
             Some(_) => Err(Error::new(ErrorKind::Other, "already initted")),
@@ -96,7 +100,7 @@ impl Broadcaster {
         // ignore receiver error, as should not happen
         match recv_ready.recv() {
             Ok(_)  => Ok(()),
-            Err(_) => Err(Error::new(ErrorKind::Other, "failed to receive channel")),
+            Err(_) => Err(Error::new(ErrorKind::Other, "failed to receive ready")),
         }?;
 
         self.listener = Some(Listener {
@@ -107,6 +111,7 @@ impl Broadcaster {
         Ok(())
     }
 
+    // close listener
     pub fn close(&mut self) {
         let listener = mem::replace(&mut self.listener, None);
         match listener {
@@ -120,8 +125,23 @@ impl Broadcaster {
         }
     }
 
-    pub fn broadcast(&self, msg: &str) -> Result<()> {
-        Ok(())
+    pub fn add_node(&mut self, address: SocketAddrV4, public_key: Option<()>) {
+        self.nodes.push(Node::new(address, public_key));
+    }
+
+    pub fn broadcast(&self, content: &str) -> Result<()> {
+        if self.nodes.len() == 0 {
+            return Ok(());
+        }
+        let mut rng = rand::thread_rng();
+        loop {
+            // pick random node
+            let i = rng.gen_range(0, self.nodes.len());
+            if self.nodes[i].send(content)? {
+                println!("seen");
+                return Ok(());
+            }
+        }
     }
 }
 

@@ -4,7 +4,7 @@ mod broadcaster;
 
 #[cfg(test)]
 mod tests {
-    use std::{thread, time};
+    use std::{thread, time, net::{Ipv4Addr, SocketAddrV4}};
     use super::broadcaster::Broadcaster;
     #[test]
     fn it_works() {
@@ -21,6 +21,13 @@ mod tests {
     #[test]
     fn broadcast_send() {
         let b: Broadcaster = Broadcaster::new();
+        assert!(b.broadcast("Hello").is_ok());
+    }
+
+    #[test]
+    fn broadcast_send2() {
+        let mut b: Broadcaster = Broadcaster::new();
+        b.add_node(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 8080), None);
         assert!(b.broadcast("Hello").is_ok());
     }
 }
