@@ -1,10 +1,5 @@
 // representation of broadcaster service
 
-extern crate futures;
-extern crate tokio;
-extern crate crossbeam;
-extern crate rand;
-
 use std::{io::{Result, Error, ErrorKind}, mem, thread, net::SocketAddrV4};
 use tokio::{sync::oneshot, net::{TcpListener, TcpStream}};
 use crossbeam::channel;
@@ -13,14 +8,13 @@ use crossbeam::channel;
 use rand::Rng;
 
 use crate::node::Node;
-use crate::message::Message;
 
 fn handle_socket(sock: TcpStream) {
     ()
 }
 
 #[tokio::main]
-async fn listen(
+async fn alisten(
     port: u16,
     ready: channel::Sender<Result<()>>,
     mut shutdown: oneshot::Receiver<()>,
@@ -84,7 +78,7 @@ impl Broadcaster {
     }
 
     // opens the listener (not required to send)
-    pub fn open(&mut self, port: u16) -> Result<()> {
+    pub fn listen(&mut self, port: u16) -> Result<()> {
         match self.listener {
             Some(_) => Err(Error::new(ErrorKind::Other, "already initted")),
             None    => Ok(()),
@@ -94,14 +88,14 @@ impl Broadcaster {
         let (send_ready, recv_ready) = channel::bounded(1);
 
         let handle = thread::spawn(move || {
-            listen(port, send_ready, recv_shutdown);
+            alisten(port, send_ready, recv_shutdown);
         });
 
         // ignore receiver error, as should not happen
         match recv_ready.recv() {
             Ok(_)  => Ok(()),
             Err(_) => Err(Error::new(ErrorKind::Other, "failed to receive ready")),
-        }?;
+        }?; // TODO real error conversion
 
         self.listener = Some(Listener {
             handle: handle,

@@ -1,15 +1,26 @@
 // basic representation of system nodes
 
-use std::{io::Result, net::SocketAddrV4};
-use tokio::net::TcpStream;
+use std::{io::{Result, Error, ErrorKind}, net::SocketAddrV4};
+use tokio::{prelude::*, net::TcpStream};
 
-const VERSION: u8 = 1;
+use crate::message::Message;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Node {
     address: SocketAddrV4,
     // TODO add real key option here
     public_key: Option<()>,
+}
+
+#[tokio::main]
+async fn asend(address: &SocketAddrV4, message: &Message) -> Result<bool> {
+    let mut sock = TcpStream::connect(address).await?;
+    let stream_data = match bincode::serialize(&message) {
+        Ok(data) => Ok(data),
+        Err(_)   => Err(Error::new(ErrorKind::Other, "serialization error")), 
+    }?; // TODO real error conversion
+    sock.write_all(&stream_data).await?;
+    Ok(false)
 }
 
 impl Node {
@@ -20,13 +31,8 @@ impl Node {
     // sends message. if no error, returns whether content was seen before by
     // other node
     pub fn send(&self, content: &str) -> Result<bool> {
-        tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .unwrap()
-            .block_on(async {
-            let sock = TcpStream::connect(self.address).await;
-        });
+        let message = Message::new(content);
+        let _ret = asend(&self.address, &message)?; // TODO actually return
         Ok(true)
     }
 }
