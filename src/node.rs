@@ -1,6 +1,9 @@
 // basic representation of system nodes
 
 use std::{io::Result, net::SocketAddrV4};
+use tokio::net::TcpStream;
+
+const VERSION: u8 = 1;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Node {
@@ -17,6 +20,13 @@ impl Node {
     // sends message. if no error, returns whether content was seen before by
     // other node
     pub fn send(&self, content: &str) -> Result<bool> {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+            let sock = TcpStream::connect(self.address).await;
+        });
         Ok(true)
     }
 }
