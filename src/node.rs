@@ -15,11 +15,11 @@ pub struct Node {
 #[tokio::main]
 async fn asend(address: &SocketAddrV4, message: &Message) -> Result<bool> {
     let mut sock = TcpStream::connect(address).await?;
-    let stream_data = match bincode::serialize(&message) {
-        Ok(data) => Ok(data),
-        Err(_)   => Err(Error::new(ErrorKind::Other, "serialization error")), 
+    let buf = match bincode::serialize(&message) {
+        Ok(b)  => Ok(b),
+        Err(_) => Err(Error::new(ErrorKind::Other, "serialization error")), 
     }?; // TODO real error conversion
-    sock.write_all(&stream_data).await?;
+    sock.write_all(&buf).await?;
     Ok(false)
 }
 

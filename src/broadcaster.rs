@@ -1,16 +1,24 @@
 // representation of broadcaster service
 
 use std::{io::{Result, Error, ErrorKind}, mem, thread, net::SocketAddrV4};
-use tokio::{sync::oneshot, net::{TcpListener, TcpStream}};
+use tokio::{prelude::*, sync::oneshot, net::{TcpListener, TcpStream}};
 use crossbeam::channel;
 // tokio channels for data into/within tokio
 // crossbeam channels for data out of tokio
 use rand::Rng;
 
 use crate::node::Node;
+use crate::message::Message;
 
-fn handle_socket(sock: TcpStream) {
-    ()
+async fn handle_socket(sock: &mut TcpStream) -> Result<()> {
+    let mut buf = Vec::<u8>::new();
+    sock.read_to_end(&mut buf).await?;
+    let message: Message = match bincode::deserialize(&buf) {
+        Ok(b)  => Ok(b),
+        Err(_) => Err(Error::new(ErrorKind::Other, "deserialization error")), 
+    }?; // TODO real error conversion
+    println!("{}", &message.get_content());
+    Ok(())
 }
 
 #[tokio::main]
@@ -40,11 +48,11 @@ async fn alisten(
         tokio::select! {
             res = listener.accept() => {
                 match res {
-                    Ok((sock, addr)) => {
+                    Ok((mut sock, addr)) => {
                         println!("conn to {:?}", addr);
-                        handle_socket(sock);
+                        let _ = handle_socket(&mut sock).await; // TODO spawn thread to do
                     },
-                    Err(e)           => println!("couldn't accept: {:?}", e),
+                    Err(e) => println!("couldn't accept: {:?}", e),
                 }
             }
             // shutdown if sender drops or sends shutdown msg

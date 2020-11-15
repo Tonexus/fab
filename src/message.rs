@@ -23,4 +23,8 @@ impl Message {
             history_signature: Vec::<String>::new(),
         }
     }
+
+    pub fn get_content(&self) -> String {
+        return self.content.clone();
+    }
 }
