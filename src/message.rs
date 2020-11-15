@@ -1,6 +1,5 @@
 // basic representation of a message
 
-use std::net::Ipv4Addr;
 use serde::{Serialize, Deserialize};
 
 const VERSION: u8 = 1;
