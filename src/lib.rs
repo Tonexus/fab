@@ -3,7 +3,14 @@
 mod node;
 mod message;
 
-use std::{io::{Result, Error, ErrorKind}, mem, sync::{Arc, RwLock}, thread, net::SocketAddrV4};
+use std::{
+    io::{Result, Error, ErrorKind},
+    mem,
+    sync::{Arc, RwLock},
+    thread,
+    collections::HashMap,
+    net::SocketAddrV4,
+};
 use tokio::{prelude::*, sync::oneshot, net::{TcpListener, TcpStream}};
 use crossbeam::channel;
 // tokio channels for data into/within tokio
@@ -13,23 +20,27 @@ use rand::Rng;
 use node::Node;
 use message::Message;
 
+type SafeNodes     = Arc<RwLock<Vec<Node>>>;
+type SafeReceived = Arc<RwLock<HashMap<String, ()>>>;
+
 #[derive(Debug)]
 struct Listener {
-    handle: thread::JoinHandle<()>,
+    received: SafeReceived,
+    handle:   thread::JoinHandle<()>,
     shutdown: oneshot::Sender<()>,
 }
 
 //#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[derive(Debug)]
 pub struct Broadcaster {
-    nodes: Arc<RwLock<Vec<Node>>>,
+    nodes:    SafeNodes,
     listener: Option<Listener>,
 }
 
 impl Broadcaster {
     pub fn new() -> Broadcaster {
         Broadcaster {
-            nodes: Arc::new(RwLock::new(Vec::<Node>::new())),
+            nodes:    Arc::new(RwLock::new(Vec::<Node>::new())),
             listener: None,
         }
     }
@@ -42,11 +53,13 @@ impl Broadcaster {
         }?;
 
         let nodes = self.nodes.clone();
+        let received = Arc::new(RwLock::new(HashMap::new()));
+        let received2 = received.clone();
         let (send_shutdown, recv_shutdown) = oneshot::channel();
         let (send_ready, recv_ready) = channel::bounded(1);
 
         let handle = thread::spawn(move || {
-            alisten(port, nodes, send_ready, recv_shutdown);
+            alisten(port, nodes, received, send_ready, recv_shutdown);
         });
 
         // ignore receiver error, as should not happen
@@ -56,7 +69,8 @@ impl Broadcaster {
         }?; // TODO real error conversion
 
         self.listener = Some(Listener {
-            handle: handle,
+            received: received2,
+            handle:   handle,
             shutdown: send_shutdown,
         });
 
@@ -73,10 +87,11 @@ impl Broadcaster {
                 // join child, ok if error since means listener already dead
                 let _ = l.handle.join();
             },
-            None => ()
+            None    => ()
         }
     }
 
+    // registers another node to broadcast to
     pub fn add_node(
         &mut self,
         address: SocketAddrV4,
@@ -89,11 +104,25 @@ impl Broadcaster {
         Ok(())
     }
 
-    pub fn broadcast(&self, content: &str) -> Result<()> {
+    // TODO immutable version w/o write to listener
+    pub fn broadcast(&mut self, content: &str) -> Result<()> {
         let nodes = match self.nodes.read() {
             Ok(n)  => Ok(n),
             Err(_) => Err(Error::new(ErrorKind::Other, "failed to unlock")),
         }?; // TODO real err conversion
+
+        // if has a listener, indicate that message to send has been received,
+        // just in case it gets echoed back
+        match &mut self.listener {
+            Some(l) => {
+                let mut received = match l.received.write() {
+                    Ok(r)  => Ok(r),
+                    Err(_) => Err(Error::new(ErrorKind::Other, "failed to unlock")),
+                }?; // TODO real err conversion
+                received.insert(content.to_string(), ());
+            },
+            None    => ()
+        }
         gbroadcast(content, &nodes)
     }
 }
@@ -110,10 +139,15 @@ fn gbroadcast(content: &str, nodes: &Vec<Node>) -> Result<()> {
             println!("seen");
             return Ok(());
         }
+        println!("huh that's weird");
     }
 }
 
-async fn handle_socket(sock: &mut TcpStream, nodes: Arc<RwLock<Vec<Node>>>) -> Result<()> {
+async fn handle_socket(
+    sock: &mut TcpStream,
+    nodes: SafeNodes,
+    received: SafeReceived,
+) -> Result<()> {
     let mut buf = Vec::<u8>::new();
     sock.read_to_end(&mut buf).await?;
     let message: Message = match bincode::deserialize(&buf) {
@@ -127,7 +161,8 @@ async fn handle_socket(sock: &mut TcpStream, nodes: Arc<RwLock<Vec<Node>>>) -> R
 #[tokio::main]
 async fn alisten(
     port: u16,
-    nodes: Arc<RwLock<Vec<Node>>>,
+    nodes: SafeNodes,
+    received: SafeReceived,
     ready: channel::Sender<Result<()>>,
     mut shutdown: oneshot::Receiver<()>,
 ) {
@@ -154,7 +189,7 @@ async fn alisten(
                 match res {
                     Ok((mut sock, addr)) => {
                         println!("conn to {:?}", addr);
-                        let _ = handle_socket(&mut sock, nodes.clone()).await; // TODO spawn thread to do
+                        let _ = handle_socket(&mut sock, nodes.clone(), received.clone()).await; // TODO spawn thread to do
                     },
                     Err(e) => println!("couldn't accept: {:?}", e),
                 }
