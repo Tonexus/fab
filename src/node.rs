@@ -1,6 +1,6 @@
 // basic representation of system nodes
 
-use std::{io::{Result, Error, ErrorKind}, net::SocketAddrV4};
+use std::{io::Result, net::SocketAddrV4};
 use tokio::{prelude::*, net::TcpStream};
 
 use crate::message::Message;

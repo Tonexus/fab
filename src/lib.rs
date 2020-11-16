@@ -11,7 +11,7 @@ use std::{
     collections::HashMap,
     net::SocketAddrV4,
 };
-use tokio::{prelude::*, sync::oneshot, task, net::{TcpListener, TcpStream}};
+use tokio::{prelude::*, sync::oneshot, net::{TcpListener, TcpStream}};
 use crossbeam::channel;
 // tokio channels for data into/within tokio
 // crossbeam channels for data out of tokio
@@ -85,7 +85,7 @@ impl Broadcaster {
                 // send shutdown, ok if error since means listener already dead
                 let _ = l.shutdown.send(());
                 // join child, ok if error since means listener already dead
-                let _ = l.handle.join();
+                let _ = l.handle.join(); // TODO do we even care about joining?
             },
             None    => ()
         }
@@ -119,28 +119,27 @@ impl Broadcaster {
             None    => ()
         }
 
-        gbroadcast(content, match &self.safe_nodes.read() {
+        gbroadcast(content, match self.safe_nodes.read() {
             Ok(n)  => Ok(n),
             Err(_) => Err(Error::new(ErrorKind::Other, "failed to read lock nodes")),
-        }?) // TODO real err conversion
+        }?.clone()) // TODO real err conversion
     }
 }
 
 // generic broadcast of string to nodes
-fn gbroadcast(content: &str, nodes: &Vec<Node>) -> Result<()> {
-    if nodes.len() == 0 {
-        return Ok(());
-    }
+fn gbroadcast(content: &str, mut nodes: Vec<Node>) -> Result<()> {
     let mut rng = rand::thread_rng();
     loop {
-        // pick random node
-        let i = rng.gen_range(0, nodes.len());
-        println!("sending");
-        if nodes[i].send(content)? {
-            println!("they had it");
+        if nodes.len() == 0 {
             return Ok(());
         }
-        println!("they did not have it");
+        // pick random node
+        let i = rng.gen_range(0, nodes.len());
+        if nodes[i].send(content)? {
+            return Ok(());
+        } else {
+            nodes.swap_remove(i);
+        }
     }
 }
 
@@ -151,7 +150,7 @@ async fn handle_socket(
 ) -> Result<()> {
     let message = Message::from_socket(sock).await?;
     let content = message.get_content();
-    println!("Received \"{}\" as message", &content);
+    //println!("Received \"{}\" as message", &content);
     let seen = match safe_received.read() {
         Ok(r)  => Ok(r),
         Err(_) => Err(Error::new(ErrorKind::Other, "failed to read lock received")),
@@ -165,13 +164,16 @@ async fn handle_socket(
             Err(_) => Err(Error::new(ErrorKind::Other, "failed to write lock received")),
         }?.insert(content.to_string(), ()); // TODO real err conversion
 
-        // start own broadcast
-        gbroadcast(&content, match &safe_nodes.read() {
+        let nodes = match safe_nodes.read() {
             Ok(n)  => Ok(n),
             Err(_) => Err(Error::new(ErrorKind::Other, "failed to read lock nodes")),
-        }?)?; // TODO real err conversion
+        }?.clone(); // TODO real err conversion
+
+        // start own broadcast
+        thread::spawn(move || {
+            let _ = gbroadcast(&content, nodes); // TODO handle errors?
+        });
     }
-    task::yield_now().await;
     Ok(())
 }
 
@@ -210,12 +212,7 @@ async fn alisten(
                         let safe_received2 = safe_received.clone();
                         tokio::spawn(async move {
                             let _ = handle_socket(&mut sock, safe_nodes2, safe_received2).await;
-                            //task::yield_now().await;
                         });
-                        /*match handle_socket(&mut sock, safe_nodes.clone(), safe_received.clone()).await {
-                            Ok(_)  => (),
-                            Err(e) => println!("coudn't handle socket: {:?}", e),
-                        }; // TODO spawn thread to do*/
                     },
                     Err(e) => println!("couldn't accept: {:?}", e),
                 }
@@ -243,14 +240,14 @@ mod tests {
 
     const LOCALHOST: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
 
-    /*#[test]
+    #[test]
     fn broadcast_send_one_party() {
         let mut b: Broadcaster = Broadcaster::new();
         assert!(b.broadcast("Hello").is_ok());
         assert!(b.listen(8080).is_ok());
         assert!(b.add_node(SocketAddrV4::new(LOCALHOST, 8080), None).is_ok());
         assert!(b.broadcast("Hello2").is_ok());
-    }*/
+    }
 
     #[test]
     fn broadcast_send_two_party() {
@@ -260,10 +257,6 @@ mod tests {
         assert!(b2.listen(8081).is_ok());
         assert!(b1.add_node(SocketAddrV4::new(LOCALHOST, 8081), None).is_ok());
         assert!(b2.add_node(SocketAddrV4::new(LOCALHOST, 8080), None).is_ok());
-        /*match b1.broadcast("Hello") {
-            Ok(_)  => (),
-            Err(e) => println!("Got err {:?}", e),
-        }*/
         assert!(b1.broadcast("Hello").is_ok());
     }
 
