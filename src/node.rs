@@ -25,15 +25,8 @@ impl Node {
     #[tokio::main]
     pub async fn send(&self, content: &str) -> Result<bool> {
         let message = Message::new(content);
-        //let b = asend(&self.address, &message)?;
         let mut sock = TcpStream::connect(self.address).await?;
         message.into_socket(&mut sock).await?;
-        if sock.read_u8().await? == 0 {
-            println!("bad");
-            Ok(false)
-        } else {
-            println!("good");
-            Ok(true)
-        } // TODO map?
+        sock.read_u8().await.map(|u| if u == 0 { false } else { true })
     }
 }
