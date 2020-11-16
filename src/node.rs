@@ -12,16 +12,8 @@ pub struct Node {
     public_key: Option<()>,
 }
 
-#[tokio::main]
-async fn asend(address: &SocketAddrV4, message: &Message) -> Result<bool> {
-    let mut sock = TcpStream::connect(address).await?;
-    let buf = match bincode::serialize(&message) {
-        Ok(b)  => Ok(b),
-        Err(_) => Err(Error::new(ErrorKind::Other, "serialization error")), 
-    }?; // TODO real error conversion
-    sock.write_all(&buf).await?;
-    Ok(false)
-}
+/*async fn asend(address: &SocketAddrV4, message: &Message) -> Result<bool> {
+}*/
 
 impl Node {
     pub const fn new(address: SocketAddrV4, public_key: Option<()>) -> Node {
@@ -30,9 +22,18 @@ impl Node {
 
     // sends message. if no error, returns whether content was seen before by
     // other node
-    pub fn send(&self, content: &str) -> Result<bool> {
+    #[tokio::main]
+    pub async fn send(&self, content: &str) -> Result<bool> {
         let message = Message::new(content);
-        let _ret = asend(&self.address, &message)?; // TODO actually return
-        Ok(true)
+        //let b = asend(&self.address, &message)?;
+        let mut sock = TcpStream::connect(self.address).await?;
+        message.into_socket(&mut sock).await?;
+        if sock.read_u8().await? == 0 {
+            println!("bad");
+            Ok(false)
+        } else {
+            println!("good");
+            Ok(true)
+        } // TODO map?
     }
 }

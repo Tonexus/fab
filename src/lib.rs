@@ -20,7 +20,7 @@ use rand::Rng;
 use node::Node;
 use message::Message;
 
-type SafeNodes     = Arc<RwLock<Vec<Node>>>;
+type SafeNodes    = Arc<RwLock<Vec<Node>>>;
 type SafeReceived = Arc<RwLock<HashMap<String, ()>>>;
 
 #[derive(Debug)]
@@ -108,7 +108,7 @@ impl Broadcaster {
     pub fn broadcast(&mut self, content: &str) -> Result<()> {
         let nodes = match self.nodes.read() {
             Ok(n)  => Ok(n),
-            Err(_) => Err(Error::new(ErrorKind::Other, "failed to unlock")),
+            Err(_) => Err(Error::new(ErrorKind::Other, "failed to read lock nodes")),
         }?; // TODO real err conversion
 
         // if has a listener, indicate that message to send has been received,
@@ -117,7 +117,7 @@ impl Broadcaster {
             Some(l) => {
                 let mut received = match l.received.write() {
                     Ok(r)  => Ok(r),
-                    Err(_) => Err(Error::new(ErrorKind::Other, "failed to unlock")),
+                    Err(_) => Err(Error::new(ErrorKind::Other, "failed to write lock received")),
                 }?; // TODO real err conversion
                 received.insert(content.to_string(), ());
             },
@@ -127,6 +127,7 @@ impl Broadcaster {
     }
 }
 
+// generic broadcast of string to nodes
 fn gbroadcast(content: &str, nodes: &Vec<Node>) -> Result<()> {
     if nodes.len() == 0 {
         return Ok(());
@@ -135,11 +136,11 @@ fn gbroadcast(content: &str, nodes: &Vec<Node>) -> Result<()> {
     loop {
         // pick random node
         let i = rng.gen_range(0, nodes.len());
+        println!("sending");
         if nodes[i].send(content)? {
-            println!("seen");
+            println!("sent");
             return Ok(());
         }
-        println!("huh that's weird");
     }
 }
 
@@ -148,14 +149,18 @@ async fn handle_socket(
     nodes: SafeNodes,
     received: SafeReceived,
 ) -> Result<()> {
-    let mut buf = Vec::<u8>::new();
-    sock.read_to_end(&mut buf).await?;
-    let message: Message = match bincode::deserialize(&buf) {
-        Ok(b)  => Ok(b),
-        Err(_) => Err(Error::new(ErrorKind::Other, "deserialization error")), 
-    }?; // TODO real error conversion
-    println!("Got \"{}\" as message", &message.get_content());
-    Ok(())
+    let received2 = match received.read() {
+        Ok(r)  => Ok(r),
+        Err(_) => Err(Error::new(ErrorKind::Other, "failed to read lock received")),
+    }?;
+    let message = Message::from_socket(sock).await?;
+    let content = message.get_content();
+    println!("Received \"{}\" as message", &content);
+    // send whether message already seen
+    sock.write_u8(match received2.get(&content) {
+        Some(_) => 1,
+        None    => 0,
+    }).await
 }
 
 #[tokio::main]
@@ -189,7 +194,10 @@ async fn alisten(
                 match res {
                     Ok((mut sock, addr)) => {
                         println!("conn to {:?}", addr);
-                        let _ = handle_socket(&mut sock, nodes.clone(), received.clone()).await; // TODO spawn thread to do
+                        match handle_socket(&mut sock, nodes.clone(), received.clone()).await {
+                            Ok(_)  => (),
+                            Err(e) => println!("coudn't handle socket: {:?}", e),
+                        }; // TODO spawn thread to do
                     },
                     Err(e) => println!("couldn't accept: {:?}", e),
                 }
@@ -218,9 +226,14 @@ mod tests {
     #[test]
     fn broadcast_send2() {
         let mut b: Broadcaster = Broadcaster::new();
+        println!("1");
         assert!(b.broadcast("Hello").is_ok());
+        println!("2");
         assert!(b.add_node(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 8080), None).is_ok());
+        println!("3");
         assert!(b.listen(8080).is_ok());
-        assert!(b.broadcast("Hello").is_ok());
+        println!("4");
+        assert!(b.broadcast("Hello2").is_ok());
+        println!("5");
     }
 }
