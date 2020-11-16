@@ -2,9 +2,10 @@
 
 mod node;
 mod message;
+mod error;
 
 use std::{
-    io::{Result, Error, ErrorKind},
+    io::{Error, ErrorKind},
     mem,
     sync::{Arc, RwLock},
     thread,
@@ -19,6 +20,7 @@ use rand::Rng;
 
 use node::Node;
 use message::Message;
+use error::Result;
 
 type SafeNodes    = Arc<RwLock<Vec<Node>>>;
 type SafeReceived = Arc<RwLock<HashMap<String, ()>>>;
@@ -190,7 +192,7 @@ async fn alisten(
         Ok(stream) => stream,
         // if error, signal that error occurred, ignoring further errors
         Err(e)     => {
-            let _ = ready.send(Err(e));
+            let _ = ready.send(Err(e.into()));
             return;
         },
     };
