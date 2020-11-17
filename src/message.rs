@@ -8,13 +8,24 @@ use crate::error::Result;
 const VERSION: u8    = 1;
 const MAX_LEN: usize = 4096;
 
-//#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Message {
     content: String,
     history: Vec<String>,
     history_signature: Vec<String>,
 }
+
+/**
+ *  Messages are split into packets when put through sockets with the
+ *  following format:
+ *
+ *  version:     u8       - version of protocol being used
+ *  data length: u64      - length of data in packet
+ *  more data:   u8       - whether or not more data is incoming
+ *  data:        variable - actual message content
+ */
+
+// TODO separate header struct for transmission?
 
 impl Message {
     pub fn new(content: &str) -> Message {

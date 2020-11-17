@@ -5,7 +5,6 @@ mod message;
 mod error;
 
 use std::{
-    io::{Error, ErrorKind},
     mem,
     sync::{Arc, RwLock},
     thread,
@@ -76,15 +75,11 @@ impl Broadcaster {
 
     // close listener
     pub fn close(&mut self) {
-        let listener = mem::replace(&mut self.listener, None);
-        match listener {
-            Some(l) => {
-                // send shutdown, ok if error since means listener already dead
-                let _ = l.shutdown.send(());
-                // join child, ok if error since means listener already dead
-                let _ = l.handle.join(); // TODO do we even care about joining?
-            },
-            None    => ()
+        if let Some(l) = mem::replace(&mut self.listener, None) {
+            // send shutdown, ok if error since means listener already dead
+            let _ = l.shutdown.send(());
+            // join child, ok if error since means listener already dead
+            let _ = l.handle.join(); // TODO do we even care about joining?
         }
     }
 
@@ -140,17 +135,10 @@ async fn handle_socket(
     sock.write_u8(if seen { 1 } else { 0 }).await?;
     if !seen {
         // insert into received
-        match safe_received.write() {
-            Ok(r)  => Ok(r),
-            Err(_) => Err(Error::new(ErrorKind::Other, "failed to write lock received")),
-        }?.insert(content.to_string(), ()); // TODO real err conversion
-
-        let nodes = match safe_nodes.read() {
-            Ok(n)  => Ok(n),
-            Err(_) => Err(Error::new(ErrorKind::Other, "failed to read lock nodes")),
-        }?.clone(); // TODO real err conversion
+        safe_received.write()?.insert(content.to_string(), ());
 
         // start own broadcast
+        let nodes = safe_nodes.read()?.clone();
         thread::spawn(move || {
             let _ = gbroadcast(&content, nodes); // TODO handle errors?
         });
@@ -177,34 +165,31 @@ async fn alisten(
     };
 
     // signal that ready to accept
-    match ready.send(Ok(())) {
-        Ok(_)  => (),
+    if ready.send(Ok(())).is_err() {
         // if error on send ready, just exit
-        Err(_) => return,
+        return;
     }
 
-    loop {
-        tokio::select! {
-            res = listener.accept() => {
-                match res {
-                    Ok((mut sock, addr)) => {
-                        println!("conn to {:?}", addr);
-                        let safe_nodes2 = safe_nodes.clone();
-                        let safe_received2 = safe_received.clone();
-                        tokio::spawn(async move {
-                            let _ = handle_socket(&mut sock, safe_nodes2, safe_received2).await;
-                        });
-                    },
-                    Err(e) => println!("couldn't accept: {:?}", e),
-                }
+    loop { tokio::select! {
+        res = listener.accept() => {
+            match res {
+                Ok((mut sock, addr)) => {
+                    println!("conn to {:?}", addr);
+                    let safe_nodes2 = safe_nodes.clone();
+                    let safe_received2 = safe_received.clone();
+                    tokio::spawn(async move {
+                        let _ = handle_socket(&mut sock, safe_nodes2, safe_received2).await;
+                    });
+                },
+                Err(e) => println!("couldn't accept: {:?}", e),
             }
-            // shutdown if sender drops or sends shutdown msg
-            _ = &mut shutdown => {
-                println!("got shutdown signal, exiting");
-                return;
-            }
+        },
+        // shutdown if sender drops or sends shutdown msg
+        _ = &mut shutdown => {
+            println!("got shutdown signal, exiting");
+            return;
         }
-    }
+    }}
 }
 
 impl Drop for Broadcaster {
