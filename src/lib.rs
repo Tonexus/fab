@@ -101,24 +101,29 @@ impl Broadcaster {
             l.safe_received.write()?.insert(content.to_string(), ());
         }
 
-        gbroadcast(content, self.safe_nodes.read()?.clone())
+        gbroadcast(content, self.safe_nodes.read()?.clone());
+        Ok(())
     }
 }
 
 // generic broadcast of string to nodes
-fn gbroadcast(content: &str, mut nodes: Vec<Node>) -> Result<()> {
+fn gbroadcast(content: &str, mut nodes: Vec<Node>) {
     let mut rng = rand::thread_rng();
     loop {
         if nodes.len() == 0 {
-            return Ok(());
+            return;
         }
         // pick random node
         let i = rng.gen_range(0, nodes.len());
-        if nodes[i].send(content)? {
-            return Ok(());
-        } else {
-            nodes.swap_remove(i);
+        // if no error and other end has seen message, exit
+        if let Ok(seen) = nodes[i].send(content) {
+            if seen {
+                return;
+            }
         }
+        // TODO retry if connection is just bad?
+        // otherwise, remove from list of nodes to try and continue
+        nodes.swap_remove(i);
     }
 }
 
@@ -140,7 +145,7 @@ async fn handle_socket(
         // start own broadcast
         let nodes = safe_nodes.read()?.clone();
         thread::spawn(move || {
-            let _ = gbroadcast(&content, nodes); // TODO handle errors?
+            gbroadcast(&content, nodes);
         });
     }
     Ok(())
@@ -171,17 +176,14 @@ async fn alisten(
     }
 
     loop { tokio::select! {
+        // accept new connection and handle it
         res = listener.accept() => {
-            match res {
-                Ok((mut sock, addr)) => {
-                    println!("conn to {:?}", addr);
-                    let safe_nodes2 = safe_nodes.clone();
-                    let safe_received2 = safe_received.clone();
-                    tokio::spawn(async move {
-                        let _ = handle_socket(&mut sock, safe_nodes2, safe_received2).await;
-                    });
-                },
-                Err(e) => println!("couldn't accept: {:?}", e),
+            if let Ok((mut sock, _)) = res {
+                let safe_nodes2 = safe_nodes.clone();
+                let safe_received2 = safe_received.clone();
+                tokio::spawn(async move {
+                    let _ = handle_socket(&mut sock, safe_nodes2, safe_received2).await;
+                });
             }
         },
         // shutdown if sender drops or sends shutdown msg
@@ -224,6 +226,9 @@ mod tests {
         assert!(b1.add_node(SocketAddrV4::new(LOCALHOST, 8081), None).is_ok());
         assert!(b2.add_node(SocketAddrV4::new(LOCALHOST, 8080), None).is_ok());
         assert!(b1.broadcast("Hello").is_ok());
+        b2.close();
+        assert!(b2.broadcast("Hello2").is_ok());
+        assert!(b1.broadcast("Hello3").is_ok());
     }
 
     #[test]
