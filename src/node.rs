@@ -1,9 +1,10 @@
 // basic representation of system nodes
 
-use std::{io::Result, net::SocketAddrV4};
+use std::net::SocketAddrV4;
 use tokio::{prelude::*, net::TcpStream};
 
 use crate::message::Message;
+use crate::error::Result;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Node {
@@ -11,9 +12,6 @@ pub struct Node {
     // TODO add real key option here
     public_key: Option<()>,
 }
-
-/*async fn asend(address: &SocketAddrV4, message: &Message) -> Result<bool> {
-}*/
 
 impl Node {
     pub const fn new(address: SocketAddrV4, public_key: Option<()>) -> Node {
@@ -24,9 +22,9 @@ impl Node {
     // other node
     #[tokio::main]
     pub async fn send(&self, content: &str) -> Result<bool> {
-        let message = Message::new(content);
+        //let message = Message::new(content);
         let mut sock = TcpStream::connect(self.address).await?;
-        message.into_socket(&mut sock).await?;
-        sock.read_u8().await.map(|u| if u == 0 { false } else { true })
+        Message::new(content).into_socket(&mut sock).await?;
+        Ok(sock.read_u8().await.map(|u| if u == 0 { false } else { true })?)
     }
 }

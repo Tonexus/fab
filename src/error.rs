@@ -1,21 +1,31 @@
 // error conversion
 
-use std::{io, error, fmt};
-use crossbeam::channel::{SendError, RecvError};
+use std::{io, sync, error, fmt};
+use crossbeam::channel;
 
 pub type Result<T> = std::result::Result<T, FabError>;
 
 #[derive(Debug)]
 pub enum FabError {
-    AlreadyInit,
+    AlreadyInitError,
     IoError(io::Error),
+    MutexPoisonedError,
+    //ChannelSendError,
+    ChannelRecvError(channel::RecvError),
+    BincodeError(bincode::Error),
 }
+
+use FabError::*;
 
 impl fmt::Display for FabError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            FabError::AlreadyInit => write!(f, "Already initialized"),
-            FabError::IoError(e)  => write!(f, "IO error: {:?}", e),
+            AlreadyInitError    => write!(f, "Already initialized"),
+            IoError(e)          => write!(f, "IO error: {:?}", e),
+            MutexPoisonedError  => write!(f, "Mutex poisoned"),
+            //ChannelSendError    => write!(f, "Channel failed"),
+            ChannelRecvError(e) => write!(f, "Channel receive error: {:?}", e),
+            BincodeError(e)     => write!(f, "Error with bincode: {:?}", e),
         }
     }
 }
@@ -23,15 +33,35 @@ impl fmt::Display for FabError {
 impl error::Error for FabError {
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         match *self {
-            FabError::IoError(ref e) => Some(e),
-            _                        => None,
+            IoError(ref e)          => Some(e),
+            ChannelRecvError(ref e) => Some(e),
+            BincodeError(ref e)     => Some(e),
+            _                       => None,
         }
     }
 }
 
 impl From<io::Error> for FabError {
-    fn from(error: io::Error) -> Self {
-        FabError::IoError(error)
+    fn from(e: io::Error) -> Self {
+        IoError(e)
+    }
+}
+
+impl<T> From<sync::PoisonError<T>> for FabError {
+    fn from(_: sync::PoisonError<T>) -> Self {
+        MutexPoisonedError
+    }
+}
+
+impl From<channel::RecvError> for FabError {
+    fn from(e: channel::RecvError) -> Self {
+        ChannelRecvError(e)
+    }
+}
+
+impl From<bincode::Error> for FabError {
+    fn from(e: bincode::Error) -> Self {
+        BincodeError(e)
     }
 }
 

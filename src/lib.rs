@@ -20,7 +20,7 @@ use rand::Rng;
 
 use node::Node;
 use message::Message;
-use error::Result;
+use error::{Result, FabError};
 
 type SafeNodes    = Arc<RwLock<Vec<Node>>>;
 type SafeReceived = Arc<RwLock<HashMap<String, ()>>>;
@@ -49,10 +49,8 @@ impl Broadcaster {
 
     // opens the listener (not required to send)
     pub fn listen(&mut self, port: u16) -> Result<()> {
-        match self.listener {
-            Some(_) => Err(Error::new(ErrorKind::Other, "already initted")),
-            None    => Ok(()),
-        }?;
+        // make sure not already have a listener
+        self.listener.as_ref().map_or(Ok(()), |_| Err(FabError::AlreadyInitError))?;
 
         let nodes = self.safe_nodes.clone();
         let received = Arc::new(RwLock::new(HashMap::new()));
@@ -64,11 +62,8 @@ impl Broadcaster {
             alisten(port, nodes, received, send_ready, recv_shutdown);
         });
 
-        // ignore receiver error, as should not happen
-        match recv_ready.recv() {
-            Ok(_)  => Ok(()),
-            Err(_) => Err(Error::new(ErrorKind::Other, "failed to receive ready")),
-        }?; // TODO real error conversion
+        // wait for listener ready, checking for both channel error and returned error
+        recv_ready.recv()??;
 
         self.listener = Some(Listener {
             safe_received: received2,
@@ -99,10 +94,7 @@ impl Broadcaster {
         address: SocketAddrV4,
         public_key: Option<()>
     ) -> Result<()> {
-        match self.safe_nodes.write() {
-            Ok(n)  => Ok(n),
-            Err(_) => Err(Error::new(ErrorKind::Other, "failed to unlock write")),
-        }?.push(Node::new(address, public_key)); // TODO real err conversion
+        self.safe_nodes.write()?.push(Node::new(address, public_key));
         Ok(())
     }
 
@@ -110,21 +102,11 @@ impl Broadcaster {
     pub fn broadcast(&mut self, content: &str) -> Result<()> {
         // if has a listener, indicate that message to send has been received,
         // just in case it gets echoed back
-        match &mut self.listener {
-            Some(l) => {
-                let mut received = match l.safe_received.write() {
-                    Ok(r)  => Ok(r),
-                    Err(_) => Err(Error::new(ErrorKind::Other, "failed to write lock received")),
-                }?; // TODO real err conversion
-                received.insert(content.to_string(), ());
-            },
-            None    => ()
+        if let Some(ref mut l) = self.listener {
+            l.safe_received.write()?.insert(content.to_string(), ());
         }
 
-        gbroadcast(content, match self.safe_nodes.read() {
-            Ok(n)  => Ok(n),
-            Err(_) => Err(Error::new(ErrorKind::Other, "failed to read lock nodes")),
-        }?.clone()) // TODO real err conversion
+        gbroadcast(content, self.safe_nodes.read()?.clone())
     }
 }
 
@@ -150,17 +132,14 @@ async fn handle_socket(
     safe_nodes: SafeNodes,
     safe_received: SafeReceived,
 ) -> Result<()> {
-    let message = Message::from_socket(sock).await?;
+    let message = Message::from_socket(sock).await?; // TODO eventually do history signature processing
     let content = message.get_content();
     //println!("Received \"{}\" as message", &content);
-    let seen = match safe_received.read() {
-        Ok(r)  => Ok(r),
-        Err(_) => Err(Error::new(ErrorKind::Other, "failed to read lock received")),
-    }?.get(&content).is_some();
+    let seen = safe_received.read()?.get(&content).is_some();
     // send whether message already seen
     sock.write_u8(if seen { 1 } else { 0 }).await?;
     if !seen {
-        // insert into seen
+        // insert into received
         match safe_received.write() {
             Ok(r)  => Ok(r),
             Err(_) => Err(Error::new(ErrorKind::Other, "failed to write lock received")),

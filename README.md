@@ -1,3 +1,6 @@
 ### Fast Approximate Broadcast
 
-TODO: Write a description
+TODO list:
+- Write a description
+- Implement receiver filtering
+- Implement receiver message output queue

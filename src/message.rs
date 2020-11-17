@@ -1,8 +1,9 @@
 // basic representation of a message
 
-use std::{io::{Result, Error, ErrorKind}};
 use serde::{Serialize, Deserialize};
 use tokio::{prelude::*, net::TcpStream};
+
+use crate::error::Result;
 
 const VERSION: u8    = 1;
 const MAX_LEN: usize = 4096;
@@ -45,17 +46,11 @@ impl Message {
                 break;
             }
         }
-        match bincode::deserialize(&buf_out) {
-            Ok(m)  => Ok(m),
-            Err(_) => Err(Error::new(ErrorKind::Other, "deserialization error")), 
-        } // TODO real error conversion
+        Ok(bincode::deserialize(&buf_out)?)
     }
 
     pub async fn into_socket(&self, sock: &mut TcpStream) -> Result<()> {
-        let buf = match bincode::serialize(&self) {
-            Ok(b)  => Ok(b),
-            Err(_) => Err(Error::new(ErrorKind::Other, "serialization error")),
-        }?; // TODO real error conversion
+        let buf = bincode::serialize(&self)?;
         let l = buf.len();
         for i in (0..l).step_by(MAX_LEN) {
             // send version
