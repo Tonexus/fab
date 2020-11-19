@@ -27,7 +27,6 @@ type SafeReceived = Arc<RwLock<HashMap<String, ()>>>;
 #[derive(Debug)]
 struct Listener {
     safe_received: SafeReceived,
-    handle:        thread::JoinHandle<()>,
     shutdown:      oneshot::Sender<()>,
 }
 
@@ -57,7 +56,7 @@ impl Broadcaster {
         let (send_shutdown, recv_shutdown) = oneshot::channel();
         let (send_ready, recv_ready) = channel::bounded(1);
 
-        let handle = thread::spawn(move || {
+        thread::spawn(move || {
             alisten(port, nodes, received, send_ready, recv_shutdown);
         });
 
@@ -66,7 +65,6 @@ impl Broadcaster {
 
         self.listener = Some(Listener {
             safe_received: received2,
-            handle:        handle,
             shutdown:      send_shutdown,
         });
 
@@ -78,8 +76,6 @@ impl Broadcaster {
         if let Some(l) = mem::replace(&mut self.listener, None) {
             // send shutdown, ok if error since means listener already dead
             let _ = l.shutdown.send(());
-            // join child, ok if error since means listener already dead
-            let _ = l.handle.join(); // TODO do we even care about joining?
         }
     }
 
