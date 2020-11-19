@@ -5,7 +5,6 @@ mod message;
 mod error;
 
 use std::{
-    mem,
     sync::{Arc, RwLock},
     thread,
     collections::HashMap,
@@ -34,21 +33,22 @@ struct Listener {
 #[derive(Debug)]
 pub struct Broadcaster {
     safe_nodes: SafeNodes,
-    listener:   Option<Listener>,
+    // maps port number to a listener
+    listeners:  HashMap<u16, Listener>,
 }
 
 impl Broadcaster {
     pub fn new() -> Broadcaster {
         Broadcaster {
             safe_nodes: Arc::new(RwLock::new(Vec::<Node>::new())),
-            listener:   None,
+            listeners:  HashMap::new(),
         }
     }
 
     // opens the listener (not required to send)
     pub fn listen(&mut self, port: u16) -> Result<()> {
         // make sure not already have a listener
-        self.listener.as_ref().map_or(Ok(()), |_| Err(FabError::AlreadyInitError))?;
+        self.listeners.get(&port).map_or(Ok(()), |_| Err(FabError::AlreadyListeningError))?;
 
         let nodes = self.safe_nodes.clone();
         let received = Arc::new(RwLock::new(HashMap::new()));
@@ -63,7 +63,7 @@ impl Broadcaster {
         // wait for listener ready, checking for both channel error and returned error
         recv_ready.recv()??;
 
-        self.listener = Some(Listener {
+        self.listeners.insert(port, Listener {
             safe_received: received2,
             shutdown:      send_shutdown,
         });
@@ -72,10 +72,13 @@ impl Broadcaster {
     }
 
     // close listener
-    pub fn close(&mut self) {
-        if let Some(l) = mem::replace(&mut self.listener, None) {
+    pub fn close(&mut self, port: u16) -> Result<()> {
+        if let Some(l) = self.listeners.remove(&port) {
             // send shutdown, ok if error since means listener already dead
             let _ = l.shutdown.send(());
+            return Ok(());
+        } else {
+            return Err(FabError::NotListeningError);
         }
     }
 
@@ -93,9 +96,9 @@ impl Broadcaster {
     pub fn broadcast(&mut self, content: &str) -> Result<()> {
         // if has a listener, indicate that message to send has been received,
         // just in case it gets echoed back
-        if let Some(ref mut l) = self.listener {
+        /*if let Some(ref mut l) = self.listener {
             l.safe_received.write()?.insert(content.to_string(), ());
-        }
+        }*/
 
         gbroadcast(content, self.safe_nodes.read()?.clone());
         Ok(())
@@ -192,7 +195,11 @@ async fn alisten(
 
 impl Drop for Broadcaster {
     fn drop(&mut self) {
-        self.close();
+        // close all listeners
+        let ports: Vec<u16> = self.listeners.keys().cloned().collect();
+        for port in ports {
+            let _ = self.close(port);
+        }
     }
 }
 
@@ -222,7 +229,7 @@ mod tests {
         assert!(b1.add_node(SocketAddrV4::new(LOCALHOST, 8081), None).is_ok());
         assert!(b2.add_node(SocketAddrV4::new(LOCALHOST, 8080), None).is_ok());
         assert!(b1.broadcast("Hello").is_ok());
-        b2.close();
+        assert!(b2.close(8081).is_ok());
         assert!(b2.broadcast("Hello2").is_ok());
         assert!(b1.broadcast("Hello3").is_ok());
     }

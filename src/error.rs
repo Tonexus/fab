@@ -7,7 +7,8 @@ pub type Result<T> = std::result::Result<T, FabError>;
 
 #[derive(Debug)]
 pub enum FabError {
-    AlreadyInitError,
+    AlreadyListeningError,
+    NotListeningError,
     IoError(io::Error),
     MutexPoisonedError,
     //ChannelSendError,
@@ -20,12 +21,13 @@ use FabError::*;
 impl fmt::Display for FabError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            AlreadyInitError    => write!(f, "Already initialized"),
-            IoError(e)          => write!(f, "IO error: {:?}", e),
-            MutexPoisonedError  => write!(f, "Mutex poisoned"),
+            AlreadyListeningError => write!(f, "Already listening on that port"),
+            NotListeningError     => write!(f, "Not listening on that port"),
+            IoError(e)            => write!(f, "IO error: {:?}", e),
+            MutexPoisonedError    => write!(f, "Mutex poisoned"),
             //ChannelSendError    => write!(f, "Channel failed"),
-            ChannelRecvError(e) => write!(f, "Channel receive error: {:?}", e),
-            BincodeError(e)     => write!(f, "Error with bincode: {:?}", e),
+            ChannelRecvError(e)   => write!(f, "Channel receive error: {:?}", e),
+            BincodeError(e)       => write!(f, "Error with bincode: {:?}", e),
         }
     }
 }
