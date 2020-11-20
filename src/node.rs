@@ -1,6 +1,6 @@
 // basic representation of system nodes
 
-use std::net::SocketAddrV4;
+use std::net::SocketAddr;
 use tokio::{prelude::*, net::TcpStream};
 
 use crate::message::Message;
@@ -8,13 +8,13 @@ use crate::error::Result;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Node {
-    address: SocketAddrV4,
+    address: SocketAddr,
     // TODO add real key option here
     public_key: Option<()>,
 }
 
 impl Node {
-    pub const fn new(address: SocketAddrV4, public_key: Option<()>) -> Node {
+    pub const fn new(address: SocketAddr, public_key: Option<()>) -> Node {
         Node {address, public_key}
     }
 
