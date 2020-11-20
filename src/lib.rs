@@ -6,12 +6,11 @@ mod error;
 
 use std::{
     sync::{Arc, RwLock},
-    thread,
     collections::HashMap,
     net::SocketAddrV4,
 };
+use futures::future::{RemoteHandle, Remote, FutureExt};
 use tokio::{prelude::*, sync::oneshot, net::{TcpListener, TcpStream}};
-use crossbeam::channel;
 // tokio channels for data into/within tokio
 // crossbeam channels for data out of tokio
 use rand::Rng;
@@ -26,7 +25,7 @@ type SafeReceived = Arc<RwLock<HashMap<String, ()>>>;
 #[derive(Debug)]
 struct Listener {
     safe_received: SafeReceived,
-    shutdown:      oneshot::Sender<()>,
+    handle:        RemoteHandle<()>,
 }
 
 //#[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -46,26 +45,33 @@ impl Broadcaster {
     }
 
     // opens the listener (not required to send)
-    pub fn listen(&mut self, port: u16) -> Result<()> {
+    pub async fn listen(&mut self, port: u16) -> Result<()> {
         // make sure not already have a listener
         self.listeners.get(&port).map_or(Ok(()), |_| Err(FabError::AlreadyListeningError))?;
 
-        let nodes = self.safe_nodes.clone();
-        let received = Arc::new(RwLock::new(HashMap::new()));
-        let received2 = received.clone();
-        let (send_shutdown, recv_shutdown) = oneshot::channel();
-        let (send_ready, recv_ready) = channel::bounded(1);
+        let safe_nodes = self.safe_nodes.clone();
+        let safe_received = Arc::new(RwLock::new(HashMap::new()));
+        let safe_received2 = safe_received.clone();
+        // TODO change to 0.0.0.0 when want to expose publically
+        let listener = TcpListener::bind(("127.0.0.1", port)).await?;
 
-        thread::spawn(move || {
-            alisten(port, nodes, received, send_ready, recv_shutdown);
-        });
+        let (task, handle) = async move { loop {
+            // accept new connections and handle them
+            if let Ok((mut sock, _)) = listener.accept().await {
+                let safe_nodes2 = safe_nodes.clone();
+                let safe_received2 = safe_received.clone();
+                tokio::spawn(async move {
+                    // TODO process/log errors
+                    let _ = handle_socket(&mut sock, safe_nodes2, safe_received2).await;
+                });
+            }
+        }}.remote_handle();
 
-        // wait for listener ready, checking for both channel error and returned error
-        recv_ready.recv()??;
+        tokio::spawn(task);
 
         self.listeners.insert(port, Listener {
-            safe_received: received2,
-            shutdown:      send_shutdown,
+            safe_received: safe_received2,
+            handle:        handle,
         });
 
         Ok(())
@@ -73,9 +79,8 @@ impl Broadcaster {
 
     // close listener
     pub fn close(&mut self, port: u16) -> Result<()> {
-        if let Some(l) = self.listeners.remove(&port) {
+        if let Some(_) = self.listeners.remove(&port) {
             // send shutdown, ok if error since means listener already dead
-            let _ = l.shutdown.send(());
             return Ok(());
         } else {
             return Err(FabError::NotListeningError);
@@ -92,30 +97,28 @@ impl Broadcaster {
         Ok(())
     }
 
-    // TODO immutable version w/o write to listener
-    pub fn broadcast(&mut self, content: &str) -> Result<()> {
+    pub async fn broadcast(&self, content: &str) -> Result<()> {
         // if has a listener, indicate that message to send has been received,
         // just in case it gets echoed back
         /*if let Some(ref mut l) = self.listener {
             l.safe_received.write()?.insert(content.to_string(), ());
         }*/
 
-        gbroadcast(content, self.safe_nodes.read()?.clone());
+        gbroadcast(content, self.safe_nodes.read()?.clone()).await;
         Ok(())
     }
 }
 
 // generic broadcast of string to nodes
-fn gbroadcast(content: &str, mut nodes: Vec<Node>) {
-    let mut rng = rand::thread_rng();
+async fn gbroadcast(content: &str, mut nodes: Vec<Node>) {
     loop {
         if nodes.len() == 0 {
             return;
         }
         // pick random node
-        let i = rng.gen_range(0, nodes.len());
+        let i = rand::thread_rng().gen_range(0, nodes.len());
         // if no error and other end has seen message, exit
-        if let Ok(seen) = nodes[i].send(content) {
+        if let Ok(seen) = nodes[i].send(content).await {
             if seen {
                 return;
             }
@@ -133,7 +136,7 @@ async fn handle_socket(
 ) -> Result<()> {
     let message = Message::from_socket(sock).await?; // TODO eventually do history signature processing
     let content = message.get_content();
-    //println!("Received \"{}\" as message", &content);
+    println!("Received \"{}\" as message", &content);
     let seen = safe_received.read()?.get(&content).is_some();
     // send whether message already seen
     sock.write_u8(if seen { 1 } else { 0 }).await?;
@@ -143,54 +146,11 @@ async fn handle_socket(
 
         // start own broadcast
         let nodes = safe_nodes.read()?.clone();
-        thread::spawn(move || {
-            gbroadcast(&content, nodes);
+        tokio::spawn(async move {
+            gbroadcast(&content, nodes).await;
         });
     }
     Ok(())
-}
-
-#[tokio::main]
-async fn alisten(
-    port: u16,
-    safe_nodes: SafeNodes,
-    safe_received: SafeReceived,
-    ready: channel::Sender<Result<()>>,
-    mut shutdown: oneshot::Receiver<()>,
-) {
-    // TODO change to 0.0.0.0 when want to expose publically
-    let listener = match TcpListener::bind(("127.0.0.1", port)).await {
-        Ok(stream) => stream,
-        // if error, signal that error occurred, ignoring further errors
-        Err(e)     => {
-            let _ = ready.send(Err(e.into()));
-            return;
-        },
-    };
-
-    // signal that ready to accept
-    if ready.send(Ok(())).is_err() {
-        // if error on send ready, just exit
-        return;
-    }
-
-    loop { tokio::select! {
-        // accept new connection and handle it
-        res = listener.accept() => {
-            if let Ok((mut sock, _)) = res {
-                let safe_nodes2 = safe_nodes.clone();
-                let safe_received2 = safe_received.clone();
-                tokio::spawn(async move {
-                    let _ = handle_socket(&mut sock, safe_nodes2, safe_received2).await;
-                });
-            }
-        },
-        // shutdown if sender drops or sends shutdown msg
-        _ = &mut shutdown => {
-            println!("got shutdown signal, exiting");
-            return;
-        }
-    }}
 }
 
 impl Drop for Broadcaster {
@@ -211,43 +171,43 @@ mod tests {
 
     const LOCALHOST: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
 
-    #[test]
-    fn broadcast_send_one_party() {
+    #[tokio::test]
+    async fn broadcast_send_one_party() {
         let mut b: Broadcaster = Broadcaster::new();
-        assert!(b.broadcast("Hello").is_ok());
-        assert!(b.listen(8080).is_ok());
+        assert!(b.broadcast("test 1 message 1").await.is_ok());
+        assert!(b.listen(8080).await.is_ok());
         assert!(b.add_node(SocketAddrV4::new(LOCALHOST, 8080), None).is_ok());
-        assert!(b.broadcast("Hello2").is_ok());
+        assert!(b.broadcast("test 1 message 2").await.is_ok());
     }
 
-    #[test]
-    fn broadcast_send_two_party() {
+    #[tokio::test]
+    async fn broadcast_send_two_party() {
         let mut b1: Broadcaster = Broadcaster::new();
         let mut b2: Broadcaster = Broadcaster::new();
-        assert!(b1.listen(8080).is_ok());
-        assert!(b2.listen(8081).is_ok());
+        assert!(b1.listen(8080).await.is_ok());
+        assert!(b2.listen(8081).await.is_ok());
         assert!(b1.add_node(SocketAddrV4::new(LOCALHOST, 8081), None).is_ok());
         assert!(b2.add_node(SocketAddrV4::new(LOCALHOST, 8080), None).is_ok());
-        assert!(b1.broadcast("Hello").is_ok());
+        assert!(b1.broadcast("test 2 message 1").await.is_ok());
         assert!(b2.close(8081).is_ok());
-        assert!(b2.broadcast("Hello2").is_ok());
-        assert!(b1.broadcast("Hello3").is_ok());
+        assert!(b2.broadcast("test 2 message 2").await.is_ok());
+        assert!(b1.broadcast("test 2 message 3").await.is_ok());
     }
 
-    #[test]
-    fn broadcast_send_three_party() {
+    #[tokio::test]
+    async fn broadcast_send_three_party() {
         let mut b1: Broadcaster = Broadcaster::new();
         let mut b2: Broadcaster = Broadcaster::new();
         let mut b3: Broadcaster = Broadcaster::new();
-        assert!(b1.listen(8080).is_ok());
-        assert!(b2.listen(8081).is_ok());
-        assert!(b3.listen(8082).is_ok());
+        assert!(b1.listen(8080).await.is_ok());
+        assert!(b2.listen(8081).await.is_ok());
+        assert!(b3.listen(8082).await.is_ok());
         assert!(b1.add_node(SocketAddrV4::new(LOCALHOST, 8081), None).is_ok());
         assert!(b1.add_node(SocketAddrV4::new(LOCALHOST, 8082), None).is_ok());
         assert!(b2.add_node(SocketAddrV4::new(LOCALHOST, 8080), None).is_ok());
         assert!(b2.add_node(SocketAddrV4::new(LOCALHOST, 8082), None).is_ok());
         assert!(b3.add_node(SocketAddrV4::new(LOCALHOST, 8080), None).is_ok());
         assert!(b3.add_node(SocketAddrV4::new(LOCALHOST, 8081), None).is_ok());
-        assert!(b1.broadcast("Hello").is_ok());
+        assert!(b1.broadcast("test 3 message 1").await.is_ok());
     }
 }

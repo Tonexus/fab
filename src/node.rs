@@ -20,7 +20,6 @@ impl Node {
 
     // sends message. if no error, returns whether content was seen before by
     // other node
-    #[tokio::main]
     pub async fn send(&self, content: &str) -> Result<bool> {
         //let message = Message::new(content);
         let mut sock = TcpStream::connect(self.address).await?;
