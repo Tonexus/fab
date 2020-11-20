@@ -4,11 +4,7 @@ mod node;
 mod message;
 mod error;
 
-use std::{
-    sync::Arc,
-    collections::HashMap,
-    net::SocketAddr,
-};
+use std::{sync::Arc, collections::HashMap, net::SocketAddr};
 use rand::Rng;
 use futures::future::{RemoteHandle, FutureExt};
 use tokio::{prelude::*, sync::{mpsc, Mutex, RwLock}, net::{TcpListener, TcpStream}};
@@ -144,8 +140,12 @@ impl Broadcaster {
     }
 
     pub async fn receive(&mut self) -> Result<String> {
-        // technically error should never happen, as broadcaster has a sender
-        self.msg_recv.recv().await.ok_or(FabError::ChannelRecvError)
+        if self.listeners.is_empty() {
+            Err(FabError::NotListeningError)
+        } else {
+            // technically error should never happen, as broadcaster has a sender
+            self.msg_recv.recv().await.ok_or(FabError::ChannelRecvError)
+        }
     }
 }
 

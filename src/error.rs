@@ -22,7 +22,7 @@ impl fmt::Display for FabError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             AlreadyListeningError => write!(f, "Already listening on that port"),
-            NotListeningError     => write!(f, "Not listening on that port"),
+            NotListeningError     => write!(f, "No listener applicable"),
             IoError(e)            => write!(f, "IO error: {:?}", e),
             MutexPoisonedError    => write!(f, "Mutex poisoned"),
             ChannelSendError      => write!(f, "Channel send error"),
