@@ -1,7 +1,7 @@
 // error conversion
 
 use std::{io, sync, error, fmt};
-//use crossbeam::channel;
+use tokio::sync::mpsc;
 
 pub type Result<T> = std::result::Result<T, FabError>;
 
@@ -11,8 +11,8 @@ pub enum FabError {
     NotListeningError,
     IoError(io::Error),
     MutexPoisonedError,
-    //ChannelSendError,
-//    ChannelRecvError(channel::RecvError),
+    ChannelSendError,
+    ChannelRecvError,
     BincodeError(bincode::Error),
 }
 
@@ -25,8 +25,8 @@ impl fmt::Display for FabError {
             NotListeningError     => write!(f, "Not listening on that port"),
             IoError(e)            => write!(f, "IO error: {:?}", e),
             MutexPoisonedError    => write!(f, "Mutex poisoned"),
-            //ChannelSendError    => write!(f, "Channel failed"),
-//            ChannelRecvError(e)   => write!(f, "Channel receive error: {:?}", e),
+            ChannelSendError      => write!(f, "Channel send error"),
+            ChannelRecvError      => write!(f, "Channel receive error"),
             BincodeError(e)       => write!(f, "Error with bincode: {:?}", e),
         }
     }
@@ -36,7 +36,6 @@ impl error::Error for FabError {
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         match *self {
             IoError(ref e)          => Some(e),
-//            ChannelRecvError(ref e) => Some(e),
             BincodeError(ref e)     => Some(e),
             _                       => None,
         }
@@ -55,11 +54,11 @@ impl<T> From<sync::PoisonError<T>> for FabError {
     }
 }
 
-/*impl From<channel::RecvError> for FabError {
-    fn from(e: channel::RecvError) -> Self {
-        ChannelRecvError(e)
+impl<T> From<mpsc::error::SendError<T>> for FabError {
+    fn from(_: mpsc::error::SendError<T>) -> Self {
+        ChannelSendError
     }
-}*/
+}
 
 impl From<bincode::Error> for FabError {
     fn from(e: bincode::Error) -> Self {
