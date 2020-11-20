@@ -5,12 +5,12 @@ mod message;
 mod error;
 
 use std::{
-    sync::{Arc, RwLock},
+    sync::Arc,
     collections::HashMap,
     net::SocketAddrV4,
 };
-use futures::future::{RemoteHandle, Remote, FutureExt};
-use tokio::{prelude::*, sync::oneshot, net::{TcpListener, TcpStream}};
+use futures::future::{RemoteHandle, FutureExt};
+use tokio::{prelude::*, sync::{Mutex, RwLock}, net::{TcpListener, TcpStream}};
 // tokio channels for data into/within tokio
 // crossbeam channels for data out of tokio
 use rand::Rng;
@@ -20,27 +20,33 @@ use message::Message;
 use error::{Result, FabError};
 
 type SafeNodes    = Arc<RwLock<Vec<Node>>>;
-type SafeReceived = Arc<RwLock<HashMap<String, ()>>>;
+type SafeReceived = Arc<Mutex<HashMap<String, ()>>>;
 
 #[derive(Debug)]
 struct Listener {
+    // hashmap of messages received by this listener
     safe_received: SafeReceived,
+    // when dropped, listener dies
     handle:        RemoteHandle<()>,
 }
 
 //#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[derive(Debug)]
 pub struct Broadcaster {
-    safe_nodes: SafeNodes,
+    // vector of nodes to send/listen to
+    safe_nodes:    SafeNodes,
+    // hashmap of messages received by the overall broadcaster
+    safe_received: SafeReceived,
     // maps port number to a listener
-    listeners:  HashMap<u16, Listener>,
+    listeners:     HashMap<u16, Listener>,
 }
 
 impl Broadcaster {
     pub fn new() -> Broadcaster {
         Broadcaster {
-            safe_nodes: Arc::new(RwLock::new(Vec::<Node>::new())),
-            listeners:  HashMap::new(),
+            safe_nodes:    Arc::new(RwLock::new(Vec::<Node>::new())),
+            safe_received: Arc::new(Mutex::new(HashMap::new())),
+            listeners:     HashMap::new(),
         }
     }
 
@@ -50,9 +56,9 @@ impl Broadcaster {
         self.listeners.get(&port).map_or(Ok(()), |_| Err(FabError::AlreadyListeningError))?;
 
         let safe_nodes = self.safe_nodes.clone();
-        let safe_received = Arc::new(RwLock::new(HashMap::new()));
+        let safe_received = Arc::new(Mutex::new(HashMap::new()));
         let safe_received2 = safe_received.clone();
-        // TODO change to 0.0.0.0 when want to expose publically
+        // TODO change to 0.0.0.0 when want to expose publicly
         let listener = TcpListener::bind(("127.0.0.1", port)).await?;
 
         let (task, handle) = async move { loop {
@@ -62,7 +68,10 @@ impl Broadcaster {
                 let safe_received2 = safe_received.clone();
                 tokio::spawn(async move {
                     // TODO process/log errors
-                    let _ = handle_socket(&mut sock, safe_nodes2, safe_received2).await;
+                    match handle_socket(&mut sock, safe_nodes2, safe_received2).await {
+                        Ok(_)  => (),
+                        Err(e) => println!("Got error: {:?}", e),
+                    }
                 });
             }
         }}.remote_handle();
@@ -88,12 +97,12 @@ impl Broadcaster {
     }
 
     // registers another node to broadcast to
-    pub fn add_node(
+    pub async fn add_node(
         &mut self,
         address: SocketAddrV4,
         public_key: Option<()>
     ) -> Result<()> {
-        self.safe_nodes.write()?.push(Node::new(address, public_key));
+        self.safe_nodes.write().await.push(Node::new(address, public_key));
         Ok(())
     }
 
@@ -104,7 +113,7 @@ impl Broadcaster {
             l.safe_received.write()?.insert(content.to_string(), ());
         }*/
 
-        gbroadcast(content, self.safe_nodes.read()?.clone()).await;
+        gbroadcast(content, self.safe_nodes.read().await.clone()).await;
         Ok(())
     }
 }
@@ -137,15 +146,13 @@ async fn handle_socket(
     let message = Message::from_socket(sock).await?; // TODO eventually do history signature processing
     let content = message.get_content();
     println!("Received \"{}\" as message", &content);
-    let seen = safe_received.read()?.get(&content).is_some();
-    // send whether message already seen
+    // insert content and get whether was seen previously
+    let seen = safe_received.lock().await.insert(content.to_string(), ()).is_some();
     sock.write_u8(if seen { 1 } else { 0 }).await?;
+    // if not seen, start broadcast
     if !seen {
-        // insert into received
-        safe_received.write()?.insert(content.to_string(), ());
-
         // start own broadcast
-        let nodes = safe_nodes.read()?.clone();
+        let nodes = safe_nodes.read().await.clone();
         tokio::spawn(async move {
             gbroadcast(&content, nodes).await;
         });
@@ -176,7 +183,7 @@ mod tests {
         let mut b: Broadcaster = Broadcaster::new();
         assert!(b.broadcast("test 1 message 1").await.is_ok());
         assert!(b.listen(8080).await.is_ok());
-        assert!(b.add_node(SocketAddrV4::new(LOCALHOST, 8080), None).is_ok());
+        assert!(b.add_node(SocketAddrV4::new(LOCALHOST, 8080), None).await.is_ok());
         assert!(b.broadcast("test 1 message 2").await.is_ok());
     }
 
@@ -186,8 +193,8 @@ mod tests {
         let mut b2: Broadcaster = Broadcaster::new();
         assert!(b1.listen(8080).await.is_ok());
         assert!(b2.listen(8081).await.is_ok());
-        assert!(b1.add_node(SocketAddrV4::new(LOCALHOST, 8081), None).is_ok());
-        assert!(b2.add_node(SocketAddrV4::new(LOCALHOST, 8080), None).is_ok());
+        assert!(b1.add_node(SocketAddrV4::new(LOCALHOST, 8081), None).await.is_ok());
+        assert!(b2.add_node(SocketAddrV4::new(LOCALHOST, 8080), None).await.is_ok());
         assert!(b1.broadcast("test 2 message 1").await.is_ok());
         assert!(b2.close(8081).is_ok());
         assert!(b2.broadcast("test 2 message 2").await.is_ok());
@@ -202,12 +209,12 @@ mod tests {
         assert!(b1.listen(8080).await.is_ok());
         assert!(b2.listen(8081).await.is_ok());
         assert!(b3.listen(8082).await.is_ok());
-        assert!(b1.add_node(SocketAddrV4::new(LOCALHOST, 8081), None).is_ok());
-        assert!(b1.add_node(SocketAddrV4::new(LOCALHOST, 8082), None).is_ok());
-        assert!(b2.add_node(SocketAddrV4::new(LOCALHOST, 8080), None).is_ok());
-        assert!(b2.add_node(SocketAddrV4::new(LOCALHOST, 8082), None).is_ok());
-        assert!(b3.add_node(SocketAddrV4::new(LOCALHOST, 8080), None).is_ok());
-        assert!(b3.add_node(SocketAddrV4::new(LOCALHOST, 8081), None).is_ok());
+        assert!(b1.add_node(SocketAddrV4::new(LOCALHOST, 8081), None).await.is_ok());
+        assert!(b1.add_node(SocketAddrV4::new(LOCALHOST, 8082), None).await.is_ok());
+        assert!(b2.add_node(SocketAddrV4::new(LOCALHOST, 8080), None).await.is_ok());
+        assert!(b2.add_node(SocketAddrV4::new(LOCALHOST, 8082), None).await.is_ok());
+        assert!(b3.add_node(SocketAddrV4::new(LOCALHOST, 8080), None).await.is_ok());
+        assert!(b3.add_node(SocketAddrV4::new(LOCALHOST, 8081), None).await.is_ok());
         assert!(b1.broadcast("test 3 message 1").await.is_ok());
     }
 }
